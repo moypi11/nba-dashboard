@@ -19,15 +19,6 @@ MYSQL_PASSWORD = "intel5-9400F"  # <-- change this
 MYSQL_DATABASE = "nba_dashboard"
 
 
-def nba_team_logo_url(team_id: int) -> str:
-    # SVG is the most reliable on cdn.nba.com
-    return f"https://cdn.nba.com/logos/nba/{int(team_id)}/global/L/logo.svg"
-
-
-def md_team_with_logo(team_id: int, team_name: str) -> str:
-    return f"![team]({nba_team_logo_url(team_id)}) {team_name}"
-
-
 def get_connection():
     return mysql.connector.connect(
         host=MYSQL_HOST,
@@ -51,6 +42,24 @@ def read_sql(query: str, params: tuple | None = None) -> pd.DataFrame:
 # ----------------------------
 # Data access helpers
 # ----------------------------
+def get_team_abbr_col() -> str:
+    """
+    Detect the team abbreviation column name from the teams table.
+    Returns the real column name (e.g., 'abbreviation', 'team_abbreviation', 'abbrev', 'abbr').
+    """
+    df = read_sql("SELECT * FROM teams LIMIT 1;")
+    if "error" in df.columns or df.empty:
+        return "abbreviation"  # fallback
+
+    cols = set(df.columns.str.lower())
+    candidates = ["abbreviation", "team_abbreviation", "abbrev", "abbr"]
+    for c in candidates:
+        if c in cols:
+            return next(x for x in df.columns if x.lower() == c)
+
+    return ""
+
+
 def get_seasons() -> list[int]:
     df = read_sql("SELECT DISTINCT season FROM games ORDER BY season DESC;")
     if "error" in df.columns or df.empty:
@@ -60,7 +69,7 @@ def get_seasons() -> list[int]:
 
 def get_teams() -> pd.DataFrame:
     return read_sql("""
-        SELECT team_id, full_name
+        SELECT team_id, abbreviation, full_name
         FROM teams
         ORDER BY full_name;
     """)
@@ -80,9 +89,11 @@ def get_team_recent_games(team_id: int, season: int, limit: int = 105) -> pd.Dat
         SELECT
           g.game_date,
           g.home_team_id,
+          ht.abbreviation AS home_abbr,
           ht.full_name AS home_team,
           g.home_team_score,
           g.visitor_team_id,
+          vt.abbreviation AS visitor_abbr,
           vt.full_name AS visitor_team,
           g.visitor_team_score,
           g.postseason,
@@ -120,6 +131,7 @@ def get_leaderboard(season: int) -> pd.DataFrame:
     query = """
         SELECT
           t.team_id AS team_id,
+          t.abbreviation AS team_abbr,
           t.full_name AS team,
           SUM(r.wins) AS wins,
           SUM(r.losses) AS losses,
@@ -160,10 +172,15 @@ def height_to_inches(h):
 
 
 def get_all_teams_avg_height_weight() -> pd.DataFrame:
-    df = read_sql("""
+    abbr_col = get_team_abbr_col()
+    if not abbr_col:
+        return pd.DataFrame({"error": ["No team abbreviation column found in teams table."]})
+
+    df = read_sql(f"""
         SELECT
           t.team_id,
           t.full_name AS team,
+          t.{abbr_col} AS team_abbr,
           p.height,
           p.weight
         FROM teams t
@@ -178,7 +195,7 @@ def get_all_teams_avg_height_weight() -> pd.DataFrame:
     df["weight_num"] = pd.to_numeric(df["weight"], errors="coerce")
 
     out = (
-        df.groupby(["team_id", "team"], as_index=False)
+        df.groupby(["team_id", "team", "team_abbr"], as_index=False)
         .agg(
             avg_height_in=("height_in", "mean"),
             avg_weight=("weight_num", "mean"),
@@ -201,11 +218,10 @@ def get_all_teams_avg_height_weight() -> pd.DataFrame:
     out["avg_weight"] = out["avg_weight"].round(1)
 
     out["team_with_logo"] = out.apply(
-        lambda r: md_team_with_logo(r["team_id"], r["team"]), axis=1)
+        lambda r: md_team_with_logo(r["team_abbr"], r["team"]), axis=1
+    )
 
-    out = out[["team_with_logo", "avg_height", "avg_weight",
-               "players_count"]].sort_values("team_with_logo")
-    return out
+    return out[["team_with_logo", "avg_height", "avg_weight", "players_count"]]
 
 
 # ----------------------------
@@ -213,6 +229,21 @@ def get_all_teams_avg_height_weight() -> pd.DataFrame:
 # ----------------------------
 app = Dash(__name__, suppress_callback_exceptions=True)
 app.title = "NBA Dashboard (Teams • Players • Games)"
+
+
+def team_logo_src(team_abbr: str) -> str:
+    # Dash serves files from /assets automatically
+    return app.get_asset_url(f"logos/{team_abbr}.png")
+
+
+def md_team_with_logo(team_abbr: str, team_name: str) -> str:
+    logo_url = app.get_asset_url(f"logos/{team_abbr}.png")
+    return (
+        f"<img src='{logo_url}' "
+        f"style='height:20px; vertical-align:middle; margin-right:6px;'/>"
+        f"{team_name}"
+    )
+
 
 teams_df = get_teams()
 seasons = get_seasons()
@@ -243,10 +274,16 @@ def kpi_card(title: str, value: str) -> html.Div:
 app.layout = html.Div(
     style={"maxWidth": "1200px", "margin": "20px auto", "fontFamily": "Arial"},
     children=[
-        html.H1("NBA Dashboard", style={"marginBottom": "6px"}),
         html.Div(
-            "Data: Teams, Players, Games + derived team_daily_results time series (from games).",
-            style={"color": "#444", "marginBottom": "18px"},
+            style={"display": "flex", "alignItems": "center",
+                   "gap": "10px", "marginBottom": "6px"},
+            children=[
+                html.Img(
+                    src=app.get_asset_url("nba_logo.png"),
+                    style={"height": "45px"}  # adjust size here
+                ),
+                html.H1("NBA Dashboard", style={"margin": "0"}),
+            ],
         ),
 
 
@@ -358,7 +395,7 @@ app.layout = html.Div(
                                             "margin": "6px 0"}),
                                     dash_table.DataTable(
                                         id="recent-games-table",
-                                        markdown_options={"html": False},
+                                        markdown_options={"html": True},
                                         page_size=15,
                                         style_table={"overflowX": "auto"},
                                         style_header={
@@ -396,7 +433,7 @@ app.layout = html.Div(
                                 style={"margin": "6px 0"}),
                         dash_table.DataTable(
                             id="leaderboard-table",
-                            markdown_options={"html": False},
+                            markdown_options={"html": True},
                             page_size=30,
                             style_table={"overflowX": "auto"},
                             style_header={
@@ -428,7 +465,7 @@ app.layout = html.Div(
                         style={"margin": "6px 0"}),
                 dash_table.DataTable(
                     id="team-avgs-table",
-                    markdown_options={"html": False},
+                    markdown_options={"html": True},
                     page_size=30,
                     style_table={"overflowX": "auto"},
                     style_header={
@@ -537,7 +574,7 @@ def update_dashboard(team_value, season_value):
             leader = leader.reset_index(drop=True)
             leader["rank"] = leader.index + 1
             leader["team_with_logo"] = leader.apply(
-                lambda r: md_team_with_logo(r["team_id"], r["team"]), axis=1
+                lambda r: md_team_with_logo(r["team_abbr"], r["team"]), axis=1
             )
 
             # Put columns in a nice order (optional)
@@ -649,10 +686,10 @@ def update_dashboard(team_value, season_value):
         recent = get_team_recent_games(team_id, season, limit=105)
         if "error" not in recent.columns and not recent.empty:
             recent["home_team_with_logo"] = recent.apply(
-                lambda r: md_team_with_logo(r["home_team_id"], r["home_team"]), axis=1
+                lambda r: md_team_with_logo(r["home_abbr"], r["home_team"]), axis=1
             )
             recent["visitor_team_with_logo"] = recent.apply(
-                lambda r: md_team_with_logo(r["visitor_team_id"], r["visitor_team"]), axis=1
+                lambda r: md_team_with_logo(r["visitor_abbr"], r["visitor_team"]), axis=1
             )
 
             recent = recent[[
