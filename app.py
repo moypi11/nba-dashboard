@@ -171,16 +171,12 @@ def height_to_inches(h):
     return feet * 12 + inches
 
 
-def get_all_teams_avg_height_weight() -> pd.DataFrame:
-    abbr_col = get_team_abbr_col()
-    if not abbr_col:
-        return pd.DataFrame({"error": ["No team abbreviation column found in teams table."]})
-
-    df = read_sql(f"""
+def get_all_teams_avg_height_weight(season: int) -> pd.DataFrame:
+    # height/weight part (your existing logic)
+    df = read_sql("""
         SELECT
           t.team_id,
           t.full_name AS team,
-          t.{abbr_col} AS team_abbr,
           p.height,
           p.weight
         FROM teams t
@@ -195,7 +191,7 @@ def get_all_teams_avg_height_weight() -> pd.DataFrame:
     df["weight_num"] = pd.to_numeric(df["weight"], errors="coerce")
 
     out = (
-        df.groupby(["team_id", "team", "team_abbr"], as_index=False)
+        df.groupby(["team_id", "team"], as_index=False)
         .agg(
             avg_height_in=("height_in", "mean"),
             avg_weight=("weight_num", "mean"),
@@ -217,11 +213,42 @@ def get_all_teams_avg_height_weight() -> pd.DataFrame:
     out["avg_height"] = out["avg_height_in"].apply(inches_to_ft_in)
     out["avg_weight"] = out["avg_weight"].round(1)
 
-    out["team_with_logo"] = out.apply(
-        lambda r: md_team_with_logo(r["team_abbr"], r["team"]), axis=1
-    )
+    out = out[["team_id", "team", "avg_height", "avg_weight", "players_count"]]
 
-    return out[["team_with_logo", "avg_height", "avg_weight", "players_count"]]
+    # ✅ merge in wins/losses/win_pct for the season
+    wl = get_all_teams_wins_losses(season)
+    if "error" not in wl.columns and not wl.empty:
+        out = out.merge(wl, on="team_id", how="left")
+
+        # format win_pct like 62.5%
+        out["win_pct"] = (pd.to_numeric(
+            out["win_pct"], errors="coerce") * 100).round(1).astype("Float64")
+        out["win_pct"] = out["win_pct"].astype(str) + "%"
+
+    # final order (drop team_id from display)
+    cols = ["team", "wins", "losses", "win_pct",
+            "avg_height", "avg_weight", "players_count"]
+    cols = [c for c in cols if c in out.columns]
+    out = out[cols].sort_values("team")
+
+    return out
+
+
+def get_all_teams_wins_losses(season: int) -> pd.DataFrame:
+    return read_sql("""
+        SELECT
+          t.team_id,
+          SUM(r.wins) AS wins,
+          SUM(r.losses) AS losses,
+          ROUND(
+            SUM(r.wins) / NULLIF(SUM(r.wins) + SUM(r.losses), 0),
+            3
+          ) AS win_pct
+        FROM team_daily_results r
+        JOIN teams t ON t.team_id = r.team_id
+        WHERE r.season = %s
+        GROUP BY t.team_id;
+    """, (season,))
 
 
 # ----------------------------
@@ -549,7 +576,7 @@ def update_dashboard(team_value, season_value):
             season_value) if season_value is not None else default_season
 
         # All teams avg table
-        team_avgs = get_all_teams_avg_height_weight()
+        team_avgs = get_all_teams_avg_height_weight(season)
         if "error" in team_avgs.columns:
             team_avgs_data = [{"error": team_avgs.iloc[0]["error"]}]
             team_avgs_cols = [{"name": "error", "id": "error"}]
