@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 # 🏀 NBA Dashboard
 
 An interactive NBA analytics dashboard built using:
