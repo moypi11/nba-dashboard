@@ -1,2 +1,4 @@
 *.csv
 data/
+.env
+nba_dashboard.sql
