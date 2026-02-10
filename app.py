@@ -2,6 +2,7 @@
 # NBA Dashboard (Teams • Players • Games) + derived team_daily_results
 # Adds "ALL" option in Team dropdown to show ONLY the All Teams averages table.
 
+import os
 import re
 import pandas as pd
 import mysql.connector
@@ -11,12 +12,13 @@ from dash import Dash, dcc, html, dash_table, Input, Output
 import plotly.express as px
 
 # ----------------------------
-# MySQL Config (EDIT PASSWORD)
+# MySQL Config (ENV VARS)
 # ----------------------------
-MYSQL_HOST = "localhost"
-MYSQL_USER = "root"
-MYSQL_PASSWORD = "intel5-9400F"  # <-- change this
-MYSQL_DATABASE = "nba_dashboard"
+MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
+MYSQL_USER = os.getenv("MYSQL_USER", "root")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
+MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "nba_dashboard")
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
 
 
 def get_connection():
@@ -25,6 +27,7 @@ def get_connection():
         user=MYSQL_USER,
         password=MYSQL_PASSWORD,
         database=MYSQL_DATABASE,
+        port=MYSQL_PORT,
     )
 
 
@@ -255,6 +258,7 @@ def get_all_teams_wins_losses(season: int) -> pd.DataFrame:
 # Build app (IMPORTANT: suppress_callback_exceptions)
 # ----------------------------
 app = Dash(__name__, suppress_callback_exceptions=True)
+server = app.server
 app.title = "NBA Dashboard (Teams • Players • Games)"
 
 
@@ -791,12 +795,4 @@ def update_dashboard(team_value, season_value):
 
 
 if __name__ == "__main__":
-    # Install:
-    #   pip install dash plotly pandas mysql-connector-python
-    #
-    # Run:
-    #   python app.py
-    #
-    # Open:
-    #   http://127.0.0.1:8050
     app.run(debug=True)
